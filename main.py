@@ -1,7 +1,15 @@
 import locale
-locale.setlocale(locale.LC_ALL, "C.UTF-8")
+try:
+    locale.setlocale(locale.LC_ALL, "C.UTF-8")
+except locale.Error:
+    pass
+
 import requests
 import random
+import os  # <--- ГЛАВНОЕ ИСПРАВЛЕНИЕ: теперь бот знает команду os
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -19,7 +27,6 @@ from telegram.constants import ParseMode
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 DATABASE_ID = os.environ.get("DATABASE_ID")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-
 headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
     "Notion-Version": "2022-06-28",
