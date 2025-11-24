@@ -1,9 +1,9 @@
 import locale
-# Установка локали для корректной работы с датами и текстом
+# Пробуем установить локаль, игнорируем, если нет
 try:
     locale.setlocale(locale.LC_ALL, "C.UTF-8")
 except locale.Error:
-    pass # Игнорируем ошибку, если локаль не найдена (на Render может быть иначе)
+    pass
 
 import requests
 import random
@@ -22,10 +22,11 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-# === НАСТРОЙКИ (ВСТАВЬ СЮДА НОВЫЕ ДАННЫЕ) ===
-NOTION_TOKEN = ""
-DATABASE_ID = ""
-BOT_TOKEN = ""
+# === НАСТРОЙКИ (БЕРЕМ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ) ===
+# Здесь мы говорим боту: "Ищи эти данные в настройках Render"
+NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
+DATABASE_ID = os.environ.get("DATABASE_ID")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -33,13 +34,12 @@ headers = {
     "Content-Type": "application/json"
 }
 
-# --- НАЧАЛО: СПЕЦИАЛЬНЫЙ КОД ДЛЯ RENDER ---
-# Этот блок создает "фэйковый" сайт, чтобы Render думал, что все в порядке
+# --- НАЧАЛО: ФЭЙКОВЫЙ СЕРВЕР ДЛЯ RENDER ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is alive!")
+        self.wfile.write(b"Bot is active")
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
@@ -50,7 +50,7 @@ def start_fake_server():
     t = Thread(target=run_server)
     t.daemon = True
     t.start()
-# --- КОНЕЦ: СПЕЦИАЛЬНЫЙ КОД ДЛЯ RENDER ---
+# --- КОНЕЦ: ФЭЙКОВЫЙ СЕРВЕР ---
 
 last_sent_reel = {}
 TEXT_INPUT = range(1)
@@ -68,12 +68,7 @@ def split_text(text, max_length=1800):
 
 def get_ready_reels():
     url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
-    payload = {
-        "filter": {
-            "property": "Статус",
-            "select": {"equals": "Готов"}
-        }
-    }
+    payload = {"filter": {"property": "Статус", "select": {"equals": "Готов"}}}
     res = requests.post(url, headers=headers, json=payload)
     res.raise_for_status()
     data = res.json()
@@ -90,13 +85,7 @@ def extract_reel_info(page):
 
 def update_status(page_id, status="Залит"):
     url = f"https://api.notion.com/v1/pages/{page_id}"
-    payload = {
-        "properties": {
-            "Статус": {
-                "select": {"name": status}
-            }
-        }
-    }
+    payload = {"properties": {"Статус": {"select": {"name": status}}}}
     res = requests.patch(url, headers=headers, json=payload)
     res.raise_for_status()
 
@@ -124,178 +113,8 @@ def get_score_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 def get_cancel_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("❌ Отменить", callback_data="cancel_add")],
-    ]
+    keyboard = [[InlineKeyboardButton("❌ Отменить", callback_data="cancel_add")]]
     return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Привет! Выбери действие:", reply_markup=get_main_keyboard())
-
-async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("👋 Главное меню:", reply_markup=get_main_keyboard())
-
-async def send_reel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    page = get_ready_reels()
-    if not page:
-        await query.edit_message_text("❌ Нет доступных Reels со статусом 'Готов'.", reply_markup=get_main_keyboard())
-        return
-    video, hook, desc, page_id = extract_reel_info(page)
-    try:
-        update_status(page_id, "Залит")
-    except Exception as e:
-        await query.edit_message_text(f"⚠️ Ошибка обновления статуса: {e}", reply_markup=get_main_keyboard())
-        return
-    if not hook.strip():
-        await query.edit_message_text(f"⚠️ Запись {page_id[:8]} без хука, пропускаем.", reply_markup=get_after_reel_keyboard())
-        return
-    uid = update.effective_user.id
-    last_sent_reel[uid] = {"hook": hook, "desc": desc, "page_id": page_id}
-    await context.bot.send_message(chat_id=query.message.chat_id, text="━━━━━━━━━━━━━━━\n📤 **РИЛС**\n━━━━━━━━━━━━━━━", parse_mode=ParseMode.MARKDOWN)
-    await context.bot.send_message(chat_id=query.message.chat_id, text=f"`{hook}`", parse_mode=ParseMode.MARKDOWN)
-    if desc.strip():
-        await context.bot.send_message(chat_id=query.message.chat_id, text=f"`{desc}`", parse_mode=ParseMode.MARKDOWN)
-    await context.bot.send_message(chat_id=query.message.chat_id, text="✅ Рилс отправлен. Что дальше?", reply_markup=get_after_reel_keyboard())
-
-async def send_reel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    page = get_ready_reels()
-    if not page:
-        await update.message.reply_text("❌ Нет доступных Reels со статусом 'Готов'.", reply_markup=get_main_keyboard())
-        return
-    video, hook, desc, page_id = extract_reel_info(page)
-    try:
-        update_status(page_id, "Залит")
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Ошибка обновления статуса: {e}", reply_markup=get_main_keyboard())
-        return
-    if not hook.strip():
-        await update.message.reply_text(f"⚠️ Запись {page_id[:8]} без хука, пропускаем.", reply_markup=get_after_reel_keyboard())
-        return
-    uid = update.effective_user.id
-    last_sent_reel[uid] = {"hook": hook, "desc": desc, "page_id": page_id}
-    await update.message.reply_text("━━━━━━━━━━━━━━━\n📤 **РИЛС**\n━━━━━━━━━━━━━━━", parse_mode=ParseMode.MARKDOWN)
-    await update.message.reply_text(f"`{hook}`", parse_mode=ParseMode.MARKDOWN)
-    if desc.strip():
-        await update.message.reply_text(f"`{desc}`", parse_mode=ParseMode.MARKDOWN)
-    await update.message.reply_text("✅ Рилс отправлен. Что дальше?", reply_markup=get_after_reel_keyboard())
-
-async def get_score_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
-    payload = {"filter": {"property": "Статус", "select": {"equals": "Готов"}}}
-    res = requests.post(url, headers=headers, json=payload)
-    res.raise_for_status()
-    data = res.json()
-    count = len(data["results"])
-    await query.edit_message_text(f"📊 Сейчас {count} Reels со статусом 'Готов'.", reply_markup=get_score_keyboard())
-
-async def get_score_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
-    payload = {"filter": {"property": "Статус", "select": {"equals": "Готов"}}}
-    res = requests.post(url, headers=headers, json=payload)
-    res.raise_for_status()
-    data = res.json()
-    count = len(data["results"])
-    await update.message.reply_text(f"📊 Сейчас {count} Reels со статусом 'Готов'.", reply_markup=get_score_keyboard())
-
-async def undo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    uid = update.effective_user.id
-    if uid not in last_sent_reel or "page_id" not in last_sent_reel[uid]:
-        await query.edit_message_text("❌ Нечего откатывать.", reply_markup=get_main_keyboard())
-        return
-    page_id = last_sent_reel[uid]["page_id"]
-    try:
-        update_status(page_id, "Готов")
-        await query.edit_message_text("✅ Статус возвращён в 'Готов'.", reply_markup=get_main_keyboard())
-    except Exception as e:
-        await query.edit_message_text(f"⚠️ Ошибка: {e}", reply_markup=get_main_keyboard())
-
-async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if uid not in last_sent_reel or "page_id" not in last_sent_reel[uid]:
-        await update.message.reply_text("❌ Нечего откатывать.", reply_markup=get_main_keyboard())
-        return
-    page_id = last_sent_reel[uid]["page_id"]
-    try:
-        update_status(page_id, "Готов")
-        await update.message.reply_text("✅ Статус возвращён в 'Готов'.", reply_markup=get_main_keyboard())
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Ошибка: {e}", reply_markup=get_main_keyboard())
-
-def add_to_notion(hook, description, video):
-    url = "https://api.notion.com/v1/pages"
-    data = {
-        "parent": {"database_id": DATABASE_ID},
-        "properties": {
-            "Видео": {"title": [{"text": {"content": str(video)}}]},
-            "Хук": {"rich_text": [{"text": {"content": part}} for part in split_text(str(hook))]},
-            "Описание": {"rich_text": [{"text": {"content": part}} for part in split_text(str(description))]},
-            "Статус": {"select": {"name": "Готов"}}
-        }
-    }
-    response = requests.post(url, headers=headers, json=data)
-    response.raise_for_status()
-
-async def start_add_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("📝 Введи хук и описание в одном сообщении.\n\nПервый абзац — хук, остальное — описание.\nРазделяй двойным переносом строки (Enter два раза).", reply_markup=get_cancel_keyboard())
-    return TEXT_INPUT
-
-async def start_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📝 Введи хук и описание в одном сообщении.\n\nПервый абзац — хук, остальное — описание.\nРазделяй двойным переносом строки (Enter два раза).", reply_markup=get_cancel_keyboard())
-    return TEXT_INPUT
-
-async def receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message.text.strip()
-    parts = message.split("\n\n", 1)
-    hook = parts[0].strip() if len(parts) > 0 else ""
-    description = parts[1].strip() if len(parts) > 1 else ""
-    if len(hook) < 10:
-        await update.message.reply_text("⚠️ Хук слишком короткий (минимум 10 символов).\nПопробуй ещё раз:", reply_markup=get_cancel_keyboard())
-        return TEXT_INPUT
-    try:
-        add_to_notion(hook, description, "")
-        await update.message.reply_text("✅ Запись добавлена в таблицу.", reply_markup=get_main_keyboard())
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Ошибка при добавлении: {e}", reply_markup=get_main_keyboard())
-    return ConversationHandler.END
-
-async def cancel_add_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("❌ Добавление отменено.", reply_markup=get_main_keyboard())
-    return ConversationHandler.END
-
-async def cancel_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Добавление отменено.", reply_markup=get_main_keyboard())
-    return ConversationHandler.END
-
-if __name__ == '__main__':
-    # ЗАПУСК ФЭЙКОВОГО СЕРВЕРА ДЛЯ RENDER
-    start_fake_server()
-    
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("reel", send_reel_command))
-    app.add_handler(CommandHandler("score", get_score_command))
-    app.add_handler(CommandHandler("undo", undo_command))
-    app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu$"))
-    app.add_handler(CallbackQueryHandler(send_reel_callback, pattern="^get_reel$"))
-    app.add_handler(CallbackQueryHandler(get_score_callback, pattern="^score$"))
-    app.add_handler(CallbackQueryHandler(undo_callback, pattern="^undo$"))
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("add", start_add_command), CallbackQueryHandler(start_add_callback, pattern="^start_add$")],
-        states={TEXT_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_text)]},
-        fallbacks=[CommandHandler("cancel", cancel_add_command), CallbackQueryHandler(cancel_add_callback, pattern="^cancel_add$")]
-    )
-    app.add_handler(conv_handler)
-    print("✅ Бот запущен.")
-    app.run_polling()
+    await update.message.reply_text("👋 Привет! Выбери действие:", reply_markup=get_main_keyboard
