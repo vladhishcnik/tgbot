@@ -41,7 +41,11 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot is active")
     
-    # Чтобы не засорять логи сообщениями о проверках
+    # ВОТ ЭТО МЫ ДОБАВЛЯЕМ (Обработка HEAD запросов для UptimeRobot)
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+    
     def log_message(self, format, *args):
         return
 
