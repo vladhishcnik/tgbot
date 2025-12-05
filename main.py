@@ -8,8 +8,6 @@ import requests
 import random
 import os
 import sys
-from threading import Thread
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -23,10 +21,12 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-# === НАСТРОЙКИ (БЕРЕМ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ) ===
+# === НАСТРОЙКИ ===
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 DATABASE_ID = os.environ.get("DATABASE_ID")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# ВАЖНО: Эту переменную нужно будет добавить в настройки Render (см. инструкцию ниже)
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL") 
 
 headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -34,33 +34,7 @@ headers = {
     "Content-Type": "application/json"
 }
 
-# --- НАЧАЛО: ФЭЙКОВЫЙ СЕРВЕР ДЛЯ RENDER ---
-class SimpleHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is active")
-    
-    # ВОТ ЭТО МЫ ДОБАВЛЯЕМ (Обработка HEAD запросов для UptimeRobot)
-    def do_HEAD(self):
-        self.send_response(200)
-        self.end_headers()
-    
-    def log_message(self, format, *args):
-        return
-
-def run_server():
-    # Render автоматически задает переменную PORT, но если её нет - берем 10000
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), SimpleHandler)
-    print(f"🌍 Фэйковый сервер запущен на порту {port}")
-    server.serve_forever()
-
-def start_fake_server():
-    t = Thread(target=run_server)
-    t.daemon = True
-    t.start()
-# --- КОНЕЦ: ФЭЙКОВЫЙ СЕРВЕР ---
+# --- ЛОГИКА БОТА ОСТАЛАСЬ ПРЕЖНЕЙ ---
 
 last_sent_reel = {}
 TEXT_INPUT = range(1)
@@ -292,10 +266,19 @@ async def cancel_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 if __name__ == '__main__':
-    # ВАЖНО: Запускаем сервер перед ботом
-    start_fake_server()
+    # === НОВАЯ СИСТЕМА ЗАПУСКА ЧЕРЕЗ WEBHOOK ===
     
+    # 1. Берем адрес из переменной окружения, которую ты задашь в Render
+    if not WEBHOOK_URL:
+        print("ОШИБКА: Не задана переменная WEBHOOK_URL в настройках Render!")
+        sys.exit(1)
+
+    # 2. Render дает нам порт через переменную PORT
+    PORT = int(os.environ.get("PORT", 10000))
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Добавляем хендлеры
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reel", send_reel_command))
     app.add_handler(CommandHandler("score", get_score_command))
@@ -304,11 +287,20 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(send_reel_callback, pattern="^get_reel$"))
     app.add_handler(CallbackQueryHandler(get_score_callback, pattern="^score$"))
     app.add_handler(CallbackQueryHandler(undo_callback, pattern="^undo$"))
+    
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("add", start_add_command), CallbackQueryHandler(start_add_callback, pattern="^start_add$")],
         states={TEXT_INPUT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_text)]},
         fallbacks=[CommandHandler("cancel", cancel_add_command), CallbackQueryHandler(cancel_add_callback, pattern="^cancel_add$")]
     )
     app.add_handler(conv_handler)
-    print("✅ Бот запущен. Пиши /start")
-    app.run_polling()
+
+    print(f"✅ Запуск Webhook на порту {PORT}, URL: {WEBHOOK_URL}")
+    
+    # 3. ЗАПУСКАЕМ ВЕБХУК
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=BOT_TOKEN,  # Секретный путь (чтобы никто левый не слал запросы)
+        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
+    )
